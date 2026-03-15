@@ -1,0 +1,61 @@
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
+import os
+import json
+
+# Import the RAG logic from src
+from src.chain_utils import run_elite_pipeline, stream_elite_pipeline
+
+app = FastAPI(title="Medical RAG Chatbot")
+
+# Ensure directories exist
+os.makedirs("static", exist_ok=True)
+os.makedirs("templates", exist_ok=True)
+
+# Mount static and templates
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+@app.get("/", response_class=HTMLResponse)
+async def get_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.post("/chat")
+async def chat(message: str = Form(...), session_id: str = Form("web_session_1")):
+    try:
+        response, intent = run_elite_pipeline(session_id, message)
+        return JSONResponse(content={"response": response, "intent": intent})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/chat/stream")
+async def chat_stream(message: str = Form(...), session_id: str = Form("web_session_1")):
+    """
+    SSE streaming endpoint. Sends tokens as they are generated.
+    Format: data: {"token": "...", "intent": "...", "done": false}
+    """
+    def event_generator():
+        try:
+            for token, intent in stream_elite_pipeline(session_id, message):
+                data = json.dumps({"token": token, "intent": intent, "done": False})
+                yield f"data: {data}\n\n"
+            # Send completion signal
+            yield f"data: {json.dumps({'token': '', 'intent': '', 'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
