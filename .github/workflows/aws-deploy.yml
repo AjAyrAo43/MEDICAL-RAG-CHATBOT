@@ -63,19 +63,21 @@ jobs:
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-        run: |
-          # 1. Stop and remove the old container if it exists
-          sudo docker stop medicalbot || true
-          sudo docker rm medicalbot || true
+          # 1. Force fix Docker permissions dynamically for the normal user
+          sudo chmod 666 /var/run/docker.sock
 
-          # 2. Prune old images to free up space
-          sudo docker image prune -f
+          # 2. Stop and remove the old container if it exists
+          docker stop medicalbot || true
+          docker rm medicalbot || true
 
-          # 3. Pull the latest image (using -E to preserve the ECR auth token env var)
-          sudo -E docker pull "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          # 3. Prune old images to free up space
+          docker image prune -f
 
-          # 4. Run the new container
-          sudo docker run -d --name medicalbot -p 80:8000 \
+          # 4. Pull the latest image (as normal user, so ECR login works!)
+          docker pull "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+          # 5. Run the new container
+          docker run -d --name medicalbot -p 80:8000 \
             -e PINECONE_API_KEY="$PINECONE_API_KEY" \
             -e GROQ_API_KEY="$GROQ_API_KEY" \
             -e HUGGINGFACE_API_KEY="$HUGGINGFACE_API_KEY" \
