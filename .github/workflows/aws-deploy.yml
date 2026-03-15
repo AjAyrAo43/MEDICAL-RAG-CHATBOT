@@ -64,21 +64,17 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
         run: |
-          # 1. Provide the ECR auth token to the root user
-          sudo mkdir -p /root/.docker
-          sudo cp -f /home/ubuntu/.docker/config.json /root/.docker/config.json || true
-
-          # 2. Stop and remove the old container if it exists
+          # 1. Stop and remove the old container if it exists
           sudo docker stop medicalbot || true
           sudo docker rm medicalbot || true
 
-          # 3. Prune old images to free up space
+          # 2. Prune old images to free up space
           sudo docker image prune -f
 
-          # 4. Pull the latest image
-          sudo docker pull "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          # 3. Pull the latest image (using -E to preserve the ECR auth token env var)
+          sudo -E docker pull "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
-          # 5. Run the new container
+          # 4. Run the new container
           sudo docker run -d --name medicalbot -p 80:8000 \
             -e PINECONE_API_KEY="$PINECONE_API_KEY" \
             -e GROQ_API_KEY="$GROQ_API_KEY" \
