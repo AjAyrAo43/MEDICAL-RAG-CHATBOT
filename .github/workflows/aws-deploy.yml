@@ -63,9 +63,10 @@ jobs:
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          # 1. Login to ECR using sudo docker
-          /usr/local/bin/aws ecr get-login-password --region "$AWS_REGION" \
-            | sudo docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        run: |
+          # 1. Provide the ECR auth token to the root user
+          sudo mkdir -p /root/.docker
+          sudo cp -f /home/ubuntu/.docker/config.json /root/.docker/config.json || true
 
           # 2. Stop and remove the old container if it exists
           sudo docker stop medicalbot || true
