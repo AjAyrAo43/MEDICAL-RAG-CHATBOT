@@ -9,3 +9,4 @@ research/
 medical_rag_chatbot.egg-info/
 venv/
 .venv/
+env/
