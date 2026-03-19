@@ -6,7 +6,7 @@ An advanced **Retrieval-Augmented Generation (RAG)** chatbot for medical questio
 
 ## ✨ Features
 
-- 🔍 **Multi-Stage Advanced RAG Pipeline** — Query Expansion → RRF Fusion → Hybrid Retrieval → Cross-Encoder Re-ranking → Contextual Compression
+- 🔍 **Multi-Stage Advanced RAG Pipeline** — Query Expansion → Hybrid Retrieval → RRF Fusion → Cross-Encoder Re-ranking → Contextual Compression
 - 🧠 **Intent-Aware Routing** — Automatically classifies queries as `MEDICAL` (RAG pipeline) or `GENERAL` (direct LLM)
 - 💬 **Conversational Memory** — PostgreSQL-backed persistent session history with in-memory fallback
 - ⚡ **Streaming Responses** — Server-Sent Events (SSE) for real-time token streaming
@@ -40,9 +40,9 @@ User Query
 │         │                                                       │
 │  [2] Vector Search    →  Pinecone (top-10 per query variant)    │
 │         │                                                       │
-│  [3] RRF Fusion       →  Deduplicate & rank by position scores  │
+│  [3] Hybrid Merger    →  60% Vector + 40% BM25 keyword signals  │
 │         │                                                       │
-│  [4] Hybrid Merger    →  60% Vector + 40% BM25 keyword signals  │
+│  [4] RRF Fusion       →  Deduplicate & rank by position scores  │
 │         │                                                       │
 │  [5] Cross-Encoder    →  ms-marco-MiniLM-L-6-v2 re-ranking     │
 │         │                                                       │
@@ -92,29 +92,29 @@ Each of the 4 expanded queries is independently run against **Pinecone**, retrie
 
 ---
 
-### Stage 3 — Reciprocal Rank Fusion (RRF)
-**File:** `src/doc_utils.py` → `reciprocal_rank_fusion`
-
-Results from all 4 query variants are **merged and deduplicated** via RRF. A document's score is cumulative across all lists where it appears:
-
-```
-score(doc) = Σ  1 / (k + rank_i)    [k=60 by default]
-```
-
-Documents that consistently rank near the top across multiple queries receive higher fused scores and rise above documents that appear in only one list. The top-5 unique documents are returned.
-
----
-
-### Stage 4 — Hybrid Merger (Vector + BM25)
+### Stage 3 — Hybrid Merger (Vector + BM25)
 **File:** `src/retriever_utils.py` → `merger_retriever`
 
-The RRF-fused documents are re-scored using **BM25 keyword matching** (via `rank-bm25`) and combined with the vector rank signal:
+The retrieved documents from Pinecone are re-scored using **BM25 keyword matching** (via `rank-bm25`) and combined with the vector rank signal:
 
 ```
 hybrid_score = 0.6 × vector_rank_score + 0.4 × BM25_normalized_score
 ```
 
 This hybrid approach ensures that exact medical terms (drug names, ICD codes, rare terminology) that embedding models may miss are still surfaced by the keyword-based BM25 component.
+
+---
+
+### Stage 4 — Reciprocal Rank Fusion (RRF)
+**File:** `src/doc_utils.py` → `reciprocal_rank_fusion`
+
+Results from all 4 query variants (now hybrid-ranked) are **merged and deduplicated** via RRF. A document's score is cumulative across all lists where it appears:
+
+```
+score(doc) = Σ  1 / (k + rank_i)    [k=60 by default]
+```
+
+Documents that consistently rank near the top across multiple query expansions receive higher fused scores and rise above documents that appear in only one list. The top-5 unique documents are returned.
 
 ---
 
