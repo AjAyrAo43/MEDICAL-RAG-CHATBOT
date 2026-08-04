@@ -25,32 +25,63 @@ if PINECONE_API_KEY:
 if GROQ_API_KEY:
     os.environ["GROQ_API_KEY"]     = GROQ_API_KEY
 
-# ── Embeddings ────────────────────────────────
-# ✅ Must match the model used when data was originally stored
-hf_token = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
-use_hf_api = os.getenv("RENDER") is not None or hf_token is not None
+# ── Zero-RAM Cloud Embeddings Client ─────────────────
+from langchain_core.embeddings import Embeddings
+import requests
 
-if use_hf_api:
+class CloudInferenceEmbeddings(Embeddings):
+    """
+    Zero-RAM Cloud Embeddings client for BAAI/bge-large-en.
+    Queries Hugging Face Inference API over HTTPS to prevent OOM status 137 on Render Free Tier.
+    """
+    def __init__(self, model_name="BAAI/bge-large-en", api_key=None):
+        self.url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.api_key = api_key
+
+    def _request(self, payload):
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        res = requests.post(self.url, headers=headers, json=payload, timeout=30)
+        if res.status_code != 200:
+            raise RuntimeError(f"HuggingFace API Error ({res.status_code}): {res.text}")
+        return res.json()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        data = self._request({"inputs": texts, "options": {"wait_for_model": True}})
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+            if len(data[0]) > 0 and isinstance(data[0][0], list):
+                return [[sum(col) / len(col) for col in zip(*doc)] for doc in data]
+            return data
+        return data
+
+    def embed_query(self, text: str) -> list[float]:
+        data = self._request({"inputs": text, "options": {"wait_for_model": True}})
+        if isinstance(data, list):
+            if len(data) > 0 and isinstance(data[0], list):
+                return [sum(col) / len(col) for col in zip(*data)]
+            return data
+        return data
+
+# ── Embeddings Selection ───────────────────────
+hf_token = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
+is_cloud = os.getenv("RENDER") is not None or os.getenv("PORT") is not None
+
+if is_cloud:
+    print("Using zero-RAM CloudInferenceEmbeddings for Render deployment...")
+    embeddings = CloudInferenceEmbeddings("BAAI/bge-large-en", api_key=hf_token)
+else:
     try:
-        from langchain_community.embeddings import HuggingFaceInferenceEmbeddings
-        print("Using HuggingFace Inference API embeddings (RAM-optimized for cloud)...")
-        embeddings = HuggingFaceInferenceEmbeddings(
-            model_name="BAAI/bge-large-en",
-            api_key=hf_token
-        )
-    except Exception as e:
-        print(f"HuggingFaceInferenceEmbeddings init failed ({e}), falling back to local BGE embeddings...")
         embeddings = HuggingFaceBgeEmbeddings(
             model_name="BAAI/bge-large-en",
             model_kwargs={"device": device},
             encode_kwargs={"normalize_embeddings": True}
         )
-else:
-    embeddings = HuggingFaceBgeEmbeddings(
-        model_name="BAAI/bge-large-en",
-        model_kwargs={"device": device},
-        encode_kwargs={"normalize_embeddings": True}
-    )
+    except Exception as e:
+        print(f"Local BGE embeddings failed ({e}), using CloudInferenceEmbeddings...")
+        embeddings = CloudInferenceEmbeddings("BAAI/bge-large-en", api_key=hf_token)
 
 # ── Pinecone Vectorstore ──────────────────────
 pc = Pinecone(api_key=PINECONE_API_KEY)
