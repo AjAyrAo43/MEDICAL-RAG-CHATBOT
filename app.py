@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import json
@@ -10,6 +11,15 @@ import json
 from src.chain_utils import run_elite_pipeline, stream_elite_pipeline
 
 app = FastAPI(title="Medical RAG Chatbot")
+
+# Allow CORS for Vercel frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Adjust to specific Vercel URL in production if desired
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Ensure directories exist
 os.makedirs("static", exist_ok=True)
@@ -21,7 +31,7 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.post("/chat")
 async def chat(message: str = Form(...), session_id: str = Form("web_session_1")):
@@ -34,16 +44,21 @@ async def chat(message: str = Form(...), session_id: str = Form("web_session_1")
 @app.post("/chat/stream")
 async def chat_stream(message: str = Form(...), session_id: str = Form("web_session_1")):
     """
-    SSE streaming endpoint. Sends tokens as they are generated.
-    Format: data: {"token": "...", "intent": "...", "done": false}
+    SSE streaming endpoint. Sends tokens and status updates as they are generated.
+    Format: data: {"token": "...", "intent": "...", "status": "...", "done": false}
     """
     def event_generator():
         try:
-            for token, intent in stream_elite_pipeline(session_id, message):
-                data = json.dumps({"token": token, "intent": intent, "done": False})
+            for item in stream_elite_pipeline(session_id, message):
+                if len(item) == 3:
+                    token, intent, status = item
+                else:
+                    token, intent = item
+                    status = ""
+                data = json.dumps({"token": token, "intent": intent, "status": status, "done": False})
                 yield f"data: {data}\n\n"
             # Send completion signal
-            yield f"data: {json.dumps({'token': '', 'intent': '', 'done': True})}\n\n"
+            yield f"data: {json.dumps({'token': '', 'intent': '', 'status': '', 'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
 
@@ -58,4 +73,4 @@ async def chat_stream(message: str = Form(...), session_id: str = Form("web_sess
     )
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

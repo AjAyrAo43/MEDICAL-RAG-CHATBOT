@@ -1,3 +1,7 @@
+// Configurable Backend API URL (for Vercel frontend + Render backend)
+// Change this to your deployed Render URL once created (e.g., 'https://medical-rag-backend.onrender.com')
+const BACKEND_URL = window.API_BASE_URL || (window.location.origin.includes('vercel.app') ? 'YOUR_RENDER_BACKEND_URL' : '');
+
 const chatMessages = document.getElementById('chat-messages');
 const chatForm = document.getElementById('chat-form');
 const userInput = document.getElementById('user-input');
@@ -57,9 +61,8 @@ function showTypingIndicator() {
         <img src="${getAvatarUrl('ai')}" alt="AI Avatar" class="message-avatar">
         <div class="message-content-wrapper">
             <div class="message-content typing">
-                <span></span>
-                <span></span>
-                <span></span>
+                <span class="status-text">Thinking...</span>
+                <div class="dots"><span></span><span></span><span></span></div>
             </div>
         </div>
     `;
@@ -89,7 +92,7 @@ chatForm.addEventListener('submit', async (e) => {
         formData.append('message', message);
         formData.append('session_id', sessionId);
 
-        const response = await fetch('/chat/stream', {
+        const response = await fetch(`${BACKEND_URL}/chat/stream`, {
             method: 'POST',
             body: formData
         });
@@ -132,12 +135,39 @@ chatForm.addEventListener('submit', async (e) => {
         messageDiv.appendChild(avatarImg);
         messageDiv.appendChild(wrapperDiv);
 
+        // Typewriter queue for smooth word-by-word / char-by-char streaming
+        let displayedText = '';
+        let charQueue = [];
+        let isStreamFinished = false;
+        let bubbleAdded = false;
+
+        const typewriterPromise = new Promise((resolve) => {
+            const timer = setInterval(() => {
+                if (charQueue.length > 0) {
+                    // Dynamically scale speed: 1 char per tick for smooth typing, slightly faster if queue builds up
+                    const chunkSize = charQueue.length > 80 ? 4 : (charQueue.length > 30 ? 2 : 1);
+                    const charsToAppend = charQueue.splice(0, chunkSize).join('');
+                    
+                    if (!bubbleAdded) {
+                        typingIndicator.remove();
+                        chatMessages.appendChild(messageDiv);
+                        bubbleAdded = true;
+                    }
+                    
+                    displayedText += charsToAppend;
+                    textP.innerHTML = displayedText.replace(/\n/g, '<br>');
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                } else if (isStreamFinished) {
+                    clearInterval(timer);
+                    resolve();
+                }
+            }, 18);
+        });
+
         // Read the SSE stream
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let fullText = '';
         let buffer = '';
-        let bubbleAdded = false;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -152,42 +182,43 @@ chatForm.addEventListener('submit', async (e) => {
                     try {
                         const data = JSON.parse(line.slice(6));
                         if (data.error) {
+                            isStreamFinished = true;
                             typingIndicator.remove();
                             addMessage('Error: ' + data.error, 'ai');
                             return;
                         }
                         if (data.done) continue;
 
-                        // On first real token: remove typing, add bubble
-                        if (!bubbleAdded && data.token) {
-                            typingIndicator.remove();
-                            chatMessages.appendChild(messageDiv);
-                            bubbleAdded = true;
+                        // Update status text on status event
+                        if (data.status) {
+                            const statusEl = typingIndicator.querySelector('.status-text');
+                            if (statusEl) statusEl.textContent = data.status;
                         }
 
-                        // Show intent tag on first token
-                        if (data.intent && intentTag.style.display === 'none') {
+                        // Show intent tag
+                        if (data.intent && data.intent !== 'PROCESSING' && intentTag.style.display === 'none') {
                             intentTag.textContent = data.intent;
                             intentTag.classList.add('intent-' + data.intent.toLowerCase());
                             intentTag.style.display = '';
                         }
 
-                        // Append token
+                        // Push tokens into character queue
                         if (data.token) {
-                            fullText += data.token;
-                            textP.innerHTML = fullText.replace(/\n/g, '<br>');
-                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                            charQueue.push(...data.token.split(''));
                         }
                     } catch (parseErr) { }
                 }
             }
         }
 
+        isStreamFinished = true;
+        await typewriterPromise;
+
         // Streaming done — show timestamp
         timestampDiv.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         timestampDiv.style.display = '';
 
-        if (!bubbleAdded) {
+        if (!bubbleAdded && !displayedText) {
             typingIndicator.remove();
             addMessage('No response received.', 'ai');
         }

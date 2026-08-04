@@ -206,27 +206,28 @@ def contextual_compression(query: str, docs: list, top_n: int = 5) -> list:
 
 
 # ── Full Retrieval Pipeline ───────────────────
-def full_retrieval_pipeline(inputs: dict) -> list:
+def full_retrieval_pipeline(inputs: dict, fast_mode: bool = True) -> list:
     """
     End-to-end advanced retrieval pipeline:
-      1. Query Expansion      → 4 diverse variants (with medical synonyms)
-      2. Vector Retrieval     → Pinecone semantic search per variant
-      3. RRF Fusion           → Merge + deduplicate by rank score
-      4. Hybrid Merger        → Combine Vector + BM25 keyword signals
-      5. Cross-Encoder        → Fine-grained relevance re-ranking
-      6. Contextual Compress  → Extract only relevant sentences per chunk
-      7. Return to LLM        → Clean, focused context for answer generation
+      1. Query Expansion      -> 4 diverse variants (with medical synonyms)
+      2. Vector Retrieval     -> Pinecone semantic search per variant
+      3. RRF Fusion           -> Merge + deduplicate by rank score
+      4. Hybrid Merger        -> Combine Vector + BM25 keyword signals
+      5. Cross-Encoder        -> Fine-grained relevance re-ranking
+      6. Contextual Compress  -> Extract relevant sentences (skipped in fast_mode for minimal TTFT)
+      7. Return to LLM        -> Clean, focused context for answer generation
 
     Args:
-        inputs : dict with key "question" (the standalone medical question)
+        inputs    : dict with key "question" (the standalone medical question)
+        fast_mode : bool, if True skips extra LLM compression round-trip for 3x faster response
 
     Returns:
-        List of top-ranked, compressed Documents ready for LLM context injection
+        List of top-ranked Documents ready for LLM context injection
     """
     q = inputs["question"]
     print(f"DEBUG: [1/6] Query Expansion for: {q}")
 
-    # Step 1-3: RAG Fusion (Expansion → Vector → RRF)
+    # Step 1-3: RAG Fusion (Expansion -> Vector -> RRF)
     fused_docs = ragfusion_chain.invoke({"question": q})
     print(f"DEBUG: [2/6] RRF Fusion returned {len(fused_docs)} docs")
 
@@ -238,9 +239,13 @@ def full_retrieval_pipeline(inputs: dict) -> list:
     reranked_docs = rerank_with_cross_encoder(q, hybrid_docs, top_n=5)
     print(f"DEBUG: [4/6] Cross-Encoder selected top {len(reranked_docs)} docs")
 
+    if fast_mode:
+        print(f"DEBUG: [5/6] Fast mode active -> using top cross-encoder reranked passages directly")
+        return reranked_docs[:5]
+
     # Step 6: Contextual Compression
     compressed_docs = contextual_compression(q, reranked_docs, top_n=5)
-    print(f"DEBUG: [5/6] Contextual Compression → {len(compressed_docs)} compressed docs")
+    print(f"DEBUG: [5/6] Contextual Compression -> {len(compressed_docs)} compressed docs")
 
     print(f"DEBUG: [6/6] Pipeline complete. Returning context to LLM.")
     return compressed_docs

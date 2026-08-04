@@ -79,6 +79,25 @@ answer_prompt = ChatPromptTemplate.from_messages([
 ])
 
 
+# ── Fast Intent Classifier ─────────────────────
+MEDICAL_KEYWORDS = {
+    "symptom", "symptoms", "treatment", "treatments", "cause", "causes", "disease", "diseases",
+    "infection", "fever", "cough", "pain", "cancer", "diabetes", "heart", "blood", "doctor",
+    "medicine", "medication", "dose", "dosage", "syndrome", "diagnosis", "therapy", "patient",
+    "virus", "bacteria", "side effect", "side effects", "pressure", "hypertension", "asthma",
+    "headache", "throat", "stomach", "rash", "drug", "drugs", "surgery", "pulse", "clinic",
+    "pathology", "anatomy", "physiology", "hospital", "physician", "tablet", "pill", "cure"
+}
+
+def fast_classify_intent(query: str) -> str:
+    q_lower = query.lower()
+    words = set(q_lower.split())
+    if words.intersection(MEDICAL_KEYWORDS) or any(k in q_lower for k in ["what is", "how to treat", "is it safe", "how do i know", "can i take"]):
+        if not any(g in q_lower for g in ["hello", "hi ", "hey ", "who are you", "what is your name"]):
+            return "MEDICAL"
+    return intent_router.invoke({"question": query}).strip().upper()
+
+
 # ── Final LangChain Answer Chain ──────────────
 final_chain = (
     {
@@ -111,44 +130,33 @@ def run_elite_pipeline(session_id: str, user_input: str) -> tuple[str, str]:
     history      = get_session_history(session_id)
     chat_history = history.messages
 
-    # Step 1 & 2: Run intent classification AND query rephrasing IN PARALLEL
-    # This saves ~0.5-1s by overlapping two independent LLM calls
-    from concurrent.futures import ThreadPoolExecutor
+    if not chat_history:
+        intent = fast_classify_intent(user_input)
+        standalone_q = user_input
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            intent_future = executor.submit(lambda: fast_classify_intent(user_input))
+            rephrase_future = executor.submit(lambda: query_contextualizer.invoke({
+                "chat_history": chat_history,
+                "question": user_input
+            }))
+            intent = intent_future.result()
+            standalone_q = rephrase_future.result()
 
-    def classify_intent():
-        return intent_router.invoke({"question": user_input}).strip().upper()
-
-    def rephrase_query():
-        return query_contextualizer.invoke({
-            "chat_history": chat_history,
-            "question": user_input
-        })
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        intent_future = executor.submit(classify_intent)
-        rephrase_future = executor.submit(rephrase_query)
-        intent = intent_future.result()
-        standalone_q = rephrase_future.result()
-
-    print(f"DEBUG: Intent detected  → {intent}")
+    print(f"DEBUG: Intent detected  -> {intent}")
 
     if "MEDICAL" in intent:
-        print(f"DEBUG: Rephrased query  → {standalone_q}")
-
-        # Step 3: Full retrieval (expansion → RRF → cross-encoder)
-        docs     = full_retrieval_pipeline({"question": standalone_q})
+        print(f"DEBUG: Rephrased query  -> {standalone_q}")
+        docs     = full_retrieval_pipeline({"question": standalone_q}, fast_mode=True)
         context  = format_docs(docs)
 
-        # Step 4: Generate answer
         response = llm.invoke(
             answer_prompt.invoke({"context": context, "question": standalone_q})
         ).content
 
     else:
-        # General query — skip RAG entirely
         print("DEBUG: Skipping RAG for general query.")
-        
-        # Create a simple prompt that injects chat history for general conversation
         general_prompt = ChatPromptTemplate.from_messages([
             (
                 "system", 
@@ -167,7 +175,6 @@ def run_elite_pipeline(session_id: str, user_input: str) -> tuple[str, str]:
             general_prompt.invoke({"chat_history": chat_history, "question": user_input})
         ).content
 
-    # Step 5: Persist exchange to session memory
     history.add_user_message(user_input)
     history.add_ai_message(response)
 
@@ -178,38 +185,39 @@ def run_elite_pipeline(session_id: str, user_input: str) -> tuple[str, str]:
 def stream_elite_pipeline(session_id: str, user_input: str):
     """
     Streaming version of the RAG pipeline.
-    Yields (token, intent) tuples as the LLM generates tokens.
-    The first yield sends the intent, subsequent yields send text chunks.
+    Yields (token, intent, status) tuples as processing happens:
+      - Initial yields send status updates to UI for zero-latency feedback
+      - Subsequent yields stream token chunks as LLM generates them
     """
+    yield "", "PROCESSING", "Analyzing query..."
+
     history      = get_session_history(session_id)
     chat_history = history.messages
 
-    # Step 1 & 2: Parallel intent + rephrase
-    from concurrent.futures import ThreadPoolExecutor
+    if not chat_history:
+        intent = fast_classify_intent(user_input)
+        standalone_q = user_input
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            intent_future = executor.submit(lambda: fast_classify_intent(user_input))
+            rephrase_future = executor.submit(lambda: query_contextualizer.invoke({
+                "chat_history": chat_history,
+                "question": user_input
+            }))
+            intent = intent_future.result()
+            standalone_q = rephrase_future.result()
 
-    def classify_intent():
-        return intent_router.invoke({"question": user_input}).strip().upper()
-
-    def rephrase_query():
-        return query_contextualizer.invoke({
-            "chat_history": chat_history,
-            "question": user_input
-        })
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        intent_future = executor.submit(classify_intent)
-        rephrase_future = executor.submit(rephrase_query)
-        intent = intent_future.result()
-        standalone_q = rephrase_future.result()
-
-    print(f"DEBUG: [STREAM] Intent → {intent}")
+    print(f"DEBUG: [STREAM] Intent -> {intent}")
 
     if "MEDICAL" in intent:
-        print(f"DEBUG: [STREAM] Rephrased → {standalone_q}")
-        docs    = full_retrieval_pipeline({"question": standalone_q})
+        yield "", "MEDICAL", "Searching verified medical textbooks..."
+        print(f"DEBUG: [STREAM] Rephrased -> {standalone_q}")
+        docs    = full_retrieval_pipeline({"question": standalone_q}, fast_mode=True)
         context = format_docs(docs)
         prompt_value = answer_prompt.invoke({"context": context, "question": standalone_q})
     else:
+        yield "", "GENERAL", "Preparing response..."
         print("DEBUG: [STREAM] General query")
         general_prompt = ChatPromptTemplate.from_messages([
             (
@@ -232,7 +240,7 @@ def stream_elite_pipeline(session_id: str, user_input: str):
         token = chunk.content
         if token:
             full_response += token
-            yield token, intent
+            yield token, intent, ""
 
     # Persist after streaming completes
     history.add_user_message(user_input)
