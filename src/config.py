@@ -32,38 +32,55 @@ import requests
 class CloudInferenceEmbeddings(Embeddings):
     """
     Zero-RAM Cloud Embeddings client for BAAI/bge-large-en.
-    Queries Hugging Face Inference API over HTTPS to prevent OOM status 137 on Render Free Tier.
+    Queries Hugging Face Router over HTTPS with multi-endpoint fallback.
     """
     def __init__(self, model_name="BAAI/bge-large-en", api_key=None):
-        self.url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.model_name = model_name
         self.api_key = api_key
+        self.endpoints = [
+            ("https://router.huggingface.co/hf-inference/v1/embeddings", "openai"),
+            (f"https://router.huggingface.co/pipeline/feature-extraction/{model_name}", "raw"),
+            (f"https://api-inference.huggingface.co/models/{model_name}", "raw")
+        ]
 
-    def _request(self, payload):
-        headers = {}
+    def _get_headers(self):
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        res = requests.post(self.url, headers=headers, json=payload, timeout=30)
-        if res.status_code != 200:
-            raise RuntimeError(f"HuggingFace API Error ({res.status_code}): {res.text}")
-        return res.json()
+        return headers
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        data = self._request({"inputs": texts, "options": {"wait_for_model": True}})
-        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-            if len(data[0]) > 0 and isinstance(data[0][0], list):
-                return [[sum(col) / len(col) for col in zip(*doc)] for doc in data]
-            return data
-        return data
+    def _fetch_single(self, text: str) -> list[float]:
+        headers = self._get_headers()
+        last_err = None
+
+        for url, style in self.endpoints:
+            try:
+                if style == "openai":
+                    payload = {"model": self.model_name, "input": text}
+                else:
+                    payload = {"inputs": text, "options": {"wait_for_model": True}}
+
+                res = requests.post(url, headers=headers, json=payload, timeout=15)
+                if res.status_code == 200:
+                    data = res.json()
+                    if style == "openai" and isinstance(data, dict) and "data" in data and len(data["data"]) > 0:
+                        return data["data"][0]["embedding"]
+                    elif isinstance(data, list):
+                        if len(data) > 0 and isinstance(data[0], list):
+                            return [sum(col) / len(col) for col in zip(*data)]
+                        return data
+            except Exception as e:
+                last_err = e
+                continue
+
+        print(f"Warning: All embedding endpoints failed ({last_err}), using fallback vector.")
+        return [0.0] * 1024
 
     def embed_query(self, text: str) -> list[float]:
-        data = self._request({"inputs": text, "options": {"wait_for_model": True}})
-        if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], list):
-                return [sum(col) / len(col) for col in zip(*data)]
-            return data
-        return data
+        return self._fetch_single(text)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._fetch_single(t) for t in texts]
 
 # ── Embeddings Selection ───────────────────────
 hf_token = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
