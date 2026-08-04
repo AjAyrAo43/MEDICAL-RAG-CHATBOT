@@ -1,6 +1,5 @@
 // Configurable Backend API URL (for Vercel frontend + Render backend)
-// Change this to your deployed Render URL once created (e.g., 'https://medical-rag-backend.onrender.com')
-const BACKEND_URL = window.API_BASE_URL || (window.location.origin.includes('vercel.app') ? 'YOUR_RENDER_BACKEND_URL' : '');
+const BACKEND_URL = window.API_BASE_URL || (window.location.origin.includes('vercel.app') ? 'https://medical-rag-chatbot-7hoq.onrender.com' : '');
 
 const chatMessages = document.getElementById('chat-messages');
 const chatForm = document.getElementById('chat-form');
