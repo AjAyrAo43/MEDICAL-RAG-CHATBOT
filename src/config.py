@@ -27,11 +27,30 @@ if GROQ_API_KEY:
 
 # ── Embeddings ────────────────────────────────
 # ✅ Must match the model used when data was originally stored
-embeddings = HuggingFaceBgeEmbeddings(
-    model_name="BAAI/bge-large-en",
-    model_kwargs={"device": device},
-    encode_kwargs={"normalize_embeddings": True}
-)
+hf_token = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
+use_hf_api = os.getenv("RENDER") is not None or hf_token is not None
+
+if use_hf_api:
+    try:
+        from langchain_community.embeddings import HuggingFaceInferenceEmbeddings
+        print("Using HuggingFace Inference API embeddings (RAM-optimized for cloud)...")
+        embeddings = HuggingFaceInferenceEmbeddings(
+            model_name="BAAI/bge-large-en",
+            api_key=hf_token
+        )
+    except Exception as e:
+        print(f"HuggingFaceInferenceEmbeddings init failed ({e}), falling back to local BGE embeddings...")
+        embeddings = HuggingFaceBgeEmbeddings(
+            model_name="BAAI/bge-large-en",
+            model_kwargs={"device": device},
+            encode_kwargs={"normalize_embeddings": True}
+        )
+else:
+    embeddings = HuggingFaceBgeEmbeddings(
+        model_name="BAAI/bge-large-en",
+        model_kwargs={"device": device},
+        encode_kwargs={"normalize_embeddings": True}
+    )
 
 # ── Pinecone Vectorstore ──────────────────────
 pc = Pinecone(api_key=PINECONE_API_KEY)
