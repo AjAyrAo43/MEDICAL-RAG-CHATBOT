@@ -110,7 +110,8 @@ vectorstore = PineconeVectorStore(
 )
 
 # ── LLM ──────────────────────────────────────
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model=GROQ_MODEL,
     temperature=0
 )
